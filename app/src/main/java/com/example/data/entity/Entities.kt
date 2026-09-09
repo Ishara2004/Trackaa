@@ -1,7 +1,6 @@
 package com.example.data.entity
 
 import androidx.room.Entity
-import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import com.example.data.model.GoalStatus
@@ -13,10 +12,7 @@ import com.example.data.model.TargetScope
 import com.example.data.model.TaskPriority
 import com.example.data.model.TaskStatus
 
-@Entity(
-    tableName = "goals",
-    indices = [Index("status"), Index("isDeleted")]
-)
+@Entity(tableName = "goals", indices = [Index("status"), Index("isDeleted")])
 data class GoalEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val title: String,
@@ -25,7 +21,7 @@ data class GoalEntity(
     val deadlineEpochMs: Long? = null,
     val goalType: GoalType = GoalType.TIME,
     val status: GoalStatus = GoalStatus.ACTIVE,
-    val targetMinutes: Long = 0, // e.g. 40 hours = 2400 minutes
+    val targetMinutes: Long = 0,
     val isDeleted: Boolean = false,
     val deletedAt: Long? = null,
     val createdAt: Long = System.currentTimeMillis(),
@@ -40,15 +36,12 @@ data class WorkItemTypeEntity(
     val iconName: String = "folder"
 )
 
-@Entity(
-    tableName = "work_items",
-    indices = [Index("goalId"), Index("isArchived"), Index("isDeleted")]
-)
+@Entity(tableName = "work_items", indices = [Index("goalId"), Index("isArchived"), Index("isDeleted")])
 data class WorkItemEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
     val description: String = "",
-    val type: String = "Module", // Module, Project, Work, Personal, Other, etc.
+    val type: String = "Module",
     val icon: String = "folder",
     val colorHex: String = "#38BDF8",
     val deadlineEpochMs: Long? = null,
@@ -62,10 +55,7 @@ data class WorkItemEntity(
     val modifiedAt: Long = System.currentTimeMillis()
 )
 
-@Entity(
-    tableName = "topics",
-    indices = [Index("workItemId"), Index("isDeleted")]
-)
+@Entity(tableName = "topics", indices = [Index("workItemId"), Index("isDeleted")])
 data class TopicEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val workItemId: Long,
@@ -78,10 +68,7 @@ data class TopicEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-@Entity(
-    tableName = "tasks",
-    indices = [Index("topicId"), Index("workItemId"), Index("status"), Index("isDeleted")]
-)
+@Entity(tableName = "tasks", indices = [Index("topicId"), Index("workItemId"), Index("status"), Index("isDeleted")])
 data class TaskEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val topicId: Long? = null,
@@ -100,20 +87,10 @@ data class TaskEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-@Entity(
-    tableName = "task_dependencies",
-    primaryKeys = ["taskId", "dependsOnTaskId"],
-    indices = [Index("taskId"), Index("dependsOnTaskId")]
-)
-data class TaskDependencyEntity(
-    val taskId: Long,
-    val dependsOnTaskId: Long
-)
+@Entity(tableName = "task_dependencies", primaryKeys = ["taskId", "dependsOnTaskId"], indices = [Index("taskId"), Index("dependsOnTaskId")])
+data class TaskDependencyEntity(val taskId: Long, val dependsOnTaskId: Long)
 
-@Entity(
-    tableName = "focus_sessions",
-    indices = [Index("startEpochMs"), Index("endEpochMs"), Index("isDeleted")]
-)
+@Entity(tableName = "focus_sessions", indices = [Index("startEpochMs"), Index("endEpochMs"), Index("isDeleted")])
 data class FocusSessionEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val startEpochMs: Long,
@@ -124,8 +101,11 @@ data class FocusSessionEntity(
     val totalFocusMinutes: Long = 0,
     val totalPauseMinutes: Long = 0,
     val totalBreakMinutes: Long = 0,
-    val focusQuality: Int = 3, // mandatory 1-5
-    val energyLevel: Int = 3,  // mandatory 1-5
+    val totalFocusSeconds: Long = totalFocusMinutes * 60,
+    val totalPauseSeconds: Long = totalPauseMinutes * 60,
+    val totalBreakSeconds: Long = totalBreakMinutes * 60,
+    val focusQuality: Int = 3,
+    val energyLevel: Int = 3,
     val intent: String? = null,
     val outcomeStatus: OutcomeStatus? = null,
     val outcomeNotes: String? = null,
@@ -138,10 +118,7 @@ data class FocusSessionEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-@Entity(
-    tableName = "focus_segments",
-    indices = [Index("sessionId"), Index("taskId"), Index("workItemId")]
-)
+@Entity(tableName = "focus_segments", indices = [Index("sessionId"), Index("taskId"), Index("workItemId")])
 data class FocusSegmentEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val sessionId: Long,
@@ -149,37 +126,31 @@ data class FocusSegmentEntity(
     val workItemId: Long,
     val startEpochMs: Long,
     val endEpochMs: Long,
-    val durationMinutes: Long
+    val durationMinutes: Long,
+    val durationSeconds: Long = ((endEpochMs - startEpochMs).coerceAtLeast(0L) / 1000L)
 )
 
-@Entity(
-    tableName = "pause_segments",
-    indices = [Index("sessionId")]
-)
+@Entity(tableName = "pause_segments", indices = [Index("sessionId")])
 data class PauseSegmentEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val sessionId: Long,
     val startEpochMs: Long,
     val endEpochMs: Long,
-    val durationMinutes: Long
+    val durationMinutes: Long,
+    val durationSeconds: Long = ((endEpochMs - startEpochMs).coerceAtLeast(0L) / 1000L)
 )
 
-@Entity(
-    tableName = "break_segments",
-    indices = [Index("sessionId")]
-)
+@Entity(tableName = "break_segments", indices = [Index("sessionId")])
 data class BreakSegmentEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val sessionId: Long,
     val startEpochMs: Long,
     val endEpochMs: Long,
-    val durationMinutes: Long
+    val durationMinutes: Long,
+    val durationSeconds: Long = ((endEpochMs - startEpochMs).coerceAtLeast(0L) / 1000L)
 )
 
-@Entity(
-    tableName = "interruptions",
-    indices = [Index("sessionId"), Index("timestampEpochMs")]
-)
+@Entity(tableName = "interruptions", indices = [Index("sessionId"), Index("timestampEpochMs")])
 data class InterruptionEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val sessionId: Long,
@@ -195,10 +166,7 @@ data class InterruptionReasonEntity(
     val isDefault: Boolean = false
 )
 
-@Entity(
-    tableName = "targets",
-    indices = [Index("scopeType"), Index("scopeId"), Index("periodType")]
-)
+@Entity(tableName = "targets", indices = [Index("scopeType"), Index("scopeId"), Index("periodType")])
 data class TargetEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val scopeType: TargetScope = TargetScope.GLOBAL,
@@ -212,10 +180,7 @@ data class TargetEntity(
     val createdAt: Long = System.currentTimeMillis()
 )
 
-@Entity(
-    tableName = "target_revisions",
-    indices = [Index("targetId")]
-)
+@Entity(tableName = "target_revisions", indices = [Index("targetId")])
 data class TargetRevisionEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val targetId: Long,
@@ -231,20 +196,17 @@ data class TargetRevisionEntity(
 
 @Entity(tableName = "availability")
 data class AvailabilityEntity(
-    @PrimaryKey val dayOfWeek: Int, // 1 = Monday, 7 = Sunday (matches java.time.DayOfWeek)
+    @PrimaryKey val dayOfWeek: Int,
     val isAvailable: Boolean = true,
-    val capacityMinutes: Long = 300 // default 5 hours
+    val capacityMinutes: Long = 300
 )
 
-@Entity(
-    tableName = "audit_events",
-    indices = [Index("entityType"), Index("entityId"), Index("timestamp")]
-)
+@Entity(tableName = "audit_events", indices = [Index("entityType"), Index("entityId"), Index("timestamp")])
 data class AuditEventEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val entityType: String,
     val entityId: Long,
-    val actionType: String, // EDIT, DELETE, RESTORE, REVISE, RECOVER
+    val actionType: String,
     val timestamp: Long = System.currentTimeMillis(),
     val oldValue: String? = null,
     val newValue: String? = null,
@@ -260,10 +222,7 @@ data class XpEventEntity(
     val description: String
 )
 
-@Entity(
-    tableName = "achievements",
-    indices = [Index("code", unique = true)]
-)
+@Entity(tableName = "achievements", indices = [Index("code", unique = true)])
 data class AchievementEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val code: String,
@@ -275,10 +234,7 @@ data class AchievementEntity(
     val isSecret: Boolean = false
 )
 
-@Entity(
-    tableName = "scheduled_focus",
-    indices = [Index("scheduledEpochMs")]
-)
+@Entity(tableName = "scheduled_focus", indices = [Index("scheduledEpochMs")])
 data class ScheduledFocusEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val title: String,

@@ -1,26 +1,26 @@
 package com.example.data.model
 
+import com.example.data.entity.BreakSegmentEntity
 import com.example.data.entity.FocusSegmentEntity
 import com.example.data.entity.InterruptionEntity
 import com.example.data.entity.PauseSegmentEntity
-import com.example.data.entity.BreakSegmentEntity
 
 enum class FocusEngineStatus {
-    IDLE,
-    FOCUSING,
-    PAUSED,
-    ON_BREAK,
-    REVIEW_PENDING
+    IDLE, FOCUSING, PAUSED, ON_BREAK, BREAK_COMPLETE, REVIEW_PENDING
 }
 
 data class ActiveSessionState(
     val status: FocusEngineStatus = FocusEngineStatus.IDLE,
     val mode: SessionMode = SessionMode.STOPWATCH,
     val startEpochMs: Long = 0L,
-    val plannedDurationMinutes: Long = 0L, // for countdown or pomodoro
+    val stoppedAtEpochMs: Long = 0L,
+    val lastVerifiedEpochMs: Long = 0L,
+    val plannedDurationMinutes: Long = 0L,
     val pomodoroFocusMinutes: Long = 25L,
     val pomodoroBreakMinutes: Long = 5L,
     val pomodoroState: PomodoroState = PomodoroState.FOCUS,
+    val currentCycleFocusSeconds: Long = 0L,
+    val currentCycleBreakSeconds: Long = 0L,
     val activeTaskId: Long? = null,
     val activeTaskTitle: String = "Quick Focus",
     val activeWorkItemId: Long? = null,
@@ -38,5 +38,6 @@ data class ActiveSessionState(
     val elapsedFocusSeconds: Long = 0L,
     val elapsedPauseSeconds: Long = 0L,
     val elapsedBreakSeconds: Long = 0L,
-    val totalElapsedWallSeconds: Long = 0L
+    val totalElapsedWallSeconds: Long = 0L,
+    val isRecovered: Boolean = false
 )

@@ -1,258 +1,140 @@
 package com.example.data.backup
 
+import android.content.ContentValues
 import android.content.Context
-import com.example.data.dao.TrackaaDao
-import com.example.data.entity.*
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withContext
+import android.database.Cursor
+import androidx.room.withTransaction
+import com.example.data.database.TrackaaDatabase
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 
-class BackupManager(
-    private val context: Context,
-    private val dao: TrackaaDao
-) {
-
-    /**
-     * Creates an encrypted backup string using user's passphrase
-     */
-    suspend fun createEncryptedBackup(passphrase: CharArray): String = withContext(Dispatchers.IO) {
-        val root = JSONObject()
-        root.put("version", 1)
-        root.put("createdAt", System.currentTimeMillis())
-        root.put("appName", "Trackaa")
-
-        // Goals
-        val goals = dao.getAllGoals().first()
-        val goalsArr = JSONArray()
-        goals.forEach { g ->
-            goalsArr.put(JSONObject().apply {
-                put("id", g.id)
-                put("title", g.title)
-                put("description", g.description)
-                put("targetMinutes", g.targetMinutes)
-                put("goalType", g.goalType.name)
-                put("status", g.status.name)
-                put("createdAt", g.createdAt)
-            })
-        }
-        root.put("goals", goalsArr)
-
-        // WorkItems
-        val workItems = dao.getAllWorkItems().first()
-        val itemsArr = JSONArray()
-        workItems.forEach { w ->
-            itemsArr.put(JSONObject().apply {
-                put("id", w.id)
-                put("name", w.name)
-                put("description", w.description)
-                put("type", w.type)
-                put("colorHex", w.colorHex)
-                put("credits", w.credits)
-                put("targetFocusMinutes", w.targetFocusMinutes)
-                put("goalId", w.goalId ?: -1L)
-            })
-        }
-        root.put("workItems", itemsArr)
-
-        // Tasks
-        val tasks = dao.getAllTasks().first()
-        val tasksArr = JSONArray()
-        tasks.forEach { t ->
-            tasksArr.put(JSONObject().apply {
-                put("id", t.id)
-                put("topicId", t.topicId ?: -1L)
-                put("workItemId", t.workItemId)
-                put("title", t.title)
-                put("status", t.status.name)
-                put("priority", t.priority.name)
-                put("estimatedMinutes", t.estimatedMinutes)
-                put("actualFocusMinutes", t.actualFocusMinutes)
-            })
-        }
-        root.put("tasks", tasksArr)
-
-        // FocusSessions
-        val sessions = dao.getAllFocusSessions().first()
-        val sessionsArr = JSONArray()
-        sessions.forEach { s ->
-            sessionsArr.put(JSONObject().apply {
-                put("id", s.id)
-                put("start", s.startEpochMs)
-                put("end", s.endEpochMs)
-                put("mode", s.mode.name)
-                put("totalFocusMinutes", s.totalFocusMinutes)
-                put("totalPauseMinutes", s.totalPauseMinutes)
-                put("totalBreakMinutes", s.totalBreakMinutes)
-                put("focusQuality", s.focusQuality)
-                put("energyLevel", s.energyLevel)
-                put("intent", s.intent ?: "")
-                put("notes", s.notes ?: "")
-            })
-        }
-        root.put("sessions", sessionsArr)
-
-        val jsonString = root.toString()
-        val encryptedPkg = BackupCrypto.encrypt(jsonString, passphrase)
-
-        val exportContainer = JSONObject().apply {
-            put("magic", "TRACKAA_BACKUP")
-            put("version", encryptedPkg.version)
-            put("salt", encryptedPkg.saltBase64)
-            put("iv", encryptedPkg.ivBase64)
-            put("ciphertext", encryptedPkg.ciphertextBase64)
-        }
-
-        exportContainer.toString(2)
+class BackupManager(private val context: Context, private val database: TrackaaDatabase) {
+    companion object {
+        private const val MAGIC = "TRACKAA_BACKUP"
+        private const val FORMAT_VERSION = 2
+        private val TABLES = listOf(
+            "goals","work_item_types","work_items","topics","tasks","task_dependencies",
+            "focus_sessions","focus_segments","pause_segments","break_segments","interruptions","interruption_reasons",
+            "targets","target_revisions","availability","audit_events","xp_events","achievements","scheduled_focus","reporting_periods"
+        )
+        private val CLEAR_ORDER = TABLES.reversed()
     }
 
-    /**
-     * Validates and restores data from an encrypted backup string
-     */
-    suspend fun restoreFromEncryptedBackup(
-        backupContent: String,
-        passphrase: CharArray
-    ): Result<Int> = withContext(Dispatchers.IO) {
-        runCatching {
-            val container = JSONObject(backupContent)
-            if (container.optString("magic") != "TRACKAA_BACKUP") {
-                error("Invalid Trackaa backup file format.")
+    suspend fun createEncryptedBackup(passphrase: CharArray): String {
+        require(passphrase.size >= 8) { "Use a passphrase with at least 8 characters." }
+        val raw = createWorkspaceSnapshotJson()
+        val encrypted = BackupCrypto.encrypt(raw, passphrase)
+        passphrase.fill('\u0000')
+        return JSONObject().apply {
+            put("magic", MAGIC); put("formatVersion", FORMAT_VERSION); put("cryptoVersion", encrypted.version)
+            put("salt", encrypted.saltBase64); put("iv", encrypted.ivBase64); put("ciphertext", encrypted.ciphertextBase64)
+        }.toString(2)
+    }
+
+    suspend fun restoreFromEncryptedBackup(backupContent: String, passphrase: CharArray): Result<Int> = runCatching {
+        val container = JSONObject(backupContent)
+        require(container.optString("magic") == MAGIC) { "Invalid Trackaa backup file." }
+        require(container.optInt("formatVersion", 0) in 1..FORMAT_VERSION) { "Unsupported backup version." }
+        val pkg = BackupCrypto.EncryptedPackage(
+            container.getString("salt"), container.getString("iv"), container.getString("ciphertext"), container.optInt("cryptoVersion",1)
+        )
+        val raw = BackupCrypto.decrypt(pkg, passphrase)
+        passphrase.fill('\u0000')
+        validateSnapshot(raw)
+        createRestoreSafetyBackup()
+        restoreWorkspaceSnapshot(raw)
+    }.also { passphrase.fill('\u0000') }
+
+    suspend fun createAutomaticLocalBackup(): File {
+        val raw = createWorkspaceSnapshotJson()
+        val encrypted = DeviceBackupCrypto.encrypt(raw)
+        val dir = File(context.filesDir, "auto_backups").apply { mkdirs() }
+        val file = File(dir, "trackaa_auto_${System.currentTimeMillis()}.tauto")
+        FileOutputStream(file).use { it.write(encrypted.toByteArray(Charsets.UTF_8)) }
+        dir.listFiles()?.filter { it.extension == "tauto" }?.sortedByDescending { it.lastModified() }?.drop(5)?.forEach { it.delete() }
+        return file
+    }
+
+    suspend fun restoreAutomaticLocalBackup(file: File): Result<Int> = runCatching {
+        require(file.canonicalPath.startsWith(File(context.filesDir,"auto_backups").canonicalPath)) { "Invalid backup location" }
+        val raw = DeviceBackupCrypto.decrypt(file.readText())
+        validateSnapshot(raw)
+        createRestoreSafetyBackup()
+        restoreWorkspaceSnapshot(raw)
+    }
+
+    private suspend fun createRestoreSafetyBackup() {
+        val dir = File(context.filesDir, "restore_safety").apply { mkdirs() }
+        val raw = createWorkspaceSnapshotJson()
+        val file = File(dir, "before_restore_${System.currentTimeMillis()}.tauto")
+        file.writeText(DeviceBackupCrypto.encrypt(raw))
+        dir.listFiles()?.sortedByDescending { it.lastModified() }?.drop(3)?.forEach { it.delete() }
+    }
+
+    private fun validateSnapshot(raw: String) {
+        val root = JSONObject(raw)
+        require(root.optString("magic") == "TRACKAA_WORKSPACE") { "Backup payload is not a Trackaa workspace." }
+        require(root.optInt("formatVersion",0) in 1..FORMAT_VERSION) { "Unsupported workspace schema." }
+        val tables = root.getJSONObject("tables")
+        TABLES.forEach { require(tables.has(it)) { "Backup is incomplete: missing table $it" } }
+    }
+
+    private suspend fun createWorkspaceSnapshotJson(): String = database.withTransaction {
+        val sqlite = database.openHelper.writableDatabase
+        val tablesJson = JSONObject()
+        TABLES.forEach { table ->
+            val rows = JSONArray()
+            sqlite.query("SELECT * FROM $table").use { cursor ->
+                while (cursor.moveToNext()) rows.put(cursorRow(cursor))
             }
+            tablesJson.put(table, rows)
+        }
+        JSONObject().apply {
+            put("magic","TRACKAA_WORKSPACE"); put("formatVersion",FORMAT_VERSION); put("databaseVersion",2)
+            put("createdAt",System.currentTimeMillis()); put("tables",tablesJson)
+        }.toString()
+    }
 
-            val pkg = BackupCrypto.EncryptedPackage(
-                saltBase64 = container.getString("salt"),
-                ivBase64 = container.getString("iv"),
-                ciphertextBase64 = container.getString("ciphertext"),
-                version = container.optInt("version", 1)
-            )
-
-            // Decrypt & authenticate
-            val plainJson = BackupCrypto.decrypt(pkg, passphrase)
-            val root = JSONObject(plainJson)
-
-            var restoredItemCount = 0
-
-            // Restore Goals
-            val goalsArr = root.optJSONArray("goals")
-            if (goalsArr != null) {
-                for (i in 0 until goalsArr.length()) {
-                    val g = goalsArr.getJSONObject(i)
-                    dao.insertGoal(
-                        GoalEntity(
-                            id = g.getLong("id"),
-                            title = g.getString("title"),
-                            description = g.optString("description", ""),
-                            targetMinutes = g.optLong("targetMinutes", 0L)
-                        )
-                    )
-                    restoredItemCount++
-                }
+    private fun cursorRow(cursor: Cursor): JSONObject = JSONObject().apply {
+        for (i in 0 until cursor.columnCount) {
+            val cell = JSONObject(); cell.put("type", cursor.getType(i))
+            when (cursor.getType(i)) {
+                Cursor.FIELD_TYPE_NULL -> cell.put("value", JSONObject.NULL)
+                Cursor.FIELD_TYPE_INTEGER -> cell.put("value", cursor.getLong(i))
+                Cursor.FIELD_TYPE_FLOAT -> cell.put("value", cursor.getDouble(i))
+                Cursor.FIELD_TYPE_STRING -> cell.put("value", cursor.getString(i))
+                Cursor.FIELD_TYPE_BLOB -> cell.put("value", java.util.Base64.getEncoder().encodeToString(cursor.getBlob(i)))
             }
-
-            // Restore WorkItems
-            val itemsArr = root.optJSONArray("workItems")
-            if (itemsArr != null) {
-                for (i in 0 until itemsArr.length()) {
-                    val w = itemsArr.getJSONObject(i)
-                    val gid = w.optLong("goalId", -1L).let { if (it == -1L) null else it }
-                    dao.insertWorkItem(
-                        WorkItemEntity(
-                            id = w.getLong("id"),
-                            name = w.getString("name"),
-                            description = w.optString("description", ""),
-                            type = w.optString("type", "Module"),
-                            colorHex = w.optString("colorHex", "#38BDF8"),
-                            credits = w.optDouble("credits", 0.0),
-                            targetFocusMinutes = w.optLong("targetFocusMinutes", 0L),
-                            goalId = gid
-                        )
-                    )
-                    restoredItemCount++
-                }
-            }
-
-            // Restore Tasks
-            val tasksArr = root.optJSONArray("tasks")
-            if (tasksArr != null) {
-                for (i in 0 until tasksArr.length()) {
-                    val t = tasksArr.getJSONObject(i)
-                    val tid = t.optLong("topicId", -1L).let { if (it == -1L) null else it }
-                    dao.insertTask(
-                        TaskEntity(
-                            id = t.getLong("id"),
-                            topicId = tid,
-                            workItemId = t.getLong("workItemId"),
-                            title = t.getString("title"),
-                            estimatedMinutes = t.optLong("estimatedMinutes", 0L),
-                            actualFocusMinutes = t.optLong("actualFocusMinutes", 0L)
-                        )
-                    )
-                    restoredItemCount++
-                }
-            }
-
-            // Restore Sessions
-            val sessionsArr = root.optJSONArray("sessions")
-            if (sessionsArr != null) {
-                for (i in 0 until sessionsArr.length()) {
-                    val s = sessionsArr.getJSONObject(i)
-                    dao.insertFocusSession(
-                        FocusSessionEntity(
-                            id = s.getLong("id"),
-                            startEpochMs = s.getLong("start"),
-                            endEpochMs = s.getLong("end"),
-                            totalFocusMinutes = s.getLong("totalFocusMinutes"),
-                            totalPauseMinutes = s.optLong("totalPauseMinutes", 0L),
-                            totalBreakMinutes = s.optLong("totalBreakMinutes", 0L),
-                            focusQuality = s.optInt("focusQuality", 3),
-                            energyLevel = s.optInt("energyLevel", 3),
-                            intent = s.optString("intent").ifEmpty { null },
-                            notes = s.optString("notes").ifEmpty { null }
-                        )
-                    )
-                    restoredItemCount++
-                }
-            }
-
-            // Record audit event
-            dao.insertAuditEvent(
-                AuditEventEntity(
-                    entityType = "DATABASE",
-                    entityId = 0,
-                    actionType = "RESTORE",
-                    note = "Restored $restoredItemCount items from authenticated backup"
-                )
-            )
-
-            restoredItemCount
+            put(cursor.getColumnName(i), cell)
         }
     }
 
-    /**
-     * Automatic local rotating backup saved to private app storage
-     */
-    suspend fun createAutomaticLocalBackup() = withContext(Dispatchers.IO) {
-        val backupDir = File(context.filesDir, "auto_backups")
-        if (!backupDir.exists()) backupDir.mkdirs()
-
-        val timestamp = System.currentTimeMillis()
-        val backupFile = File(backupDir, "trackaa_auto_$timestamp.json")
-
-        // Use device-private key / passphrase for auto backups
-        val autoPass = "Trackaa_Device_Local_Secret".toCharArray()
-        val encryptedContent = createEncryptedBackup(autoPass)
-
-        FileOutputStream(backupFile).use { it.write(encryptedContent.toByteArray()) }
-
-        // Keep maximum 5 rotating backups
-        val files = backupDir.listFiles()?.sortedBy { it.lastModified() } ?: emptyList()
-        if (files.size > 5) {
-            for (i in 0 until (files.size - 5)) {
-                files[i].delete()
+    private suspend fun restoreWorkspaceSnapshot(raw: String): Int = database.withTransaction {
+        val sqlite = database.openHelper.writableDatabase
+        val tables = JSONObject(raw).getJSONObject("tables")
+        CLEAR_ORDER.forEach { sqlite.execSQL("DELETE FROM $it") }
+        var count = 0
+        TABLES.forEach { table ->
+            val rows = tables.getJSONArray(table)
+            for (i in 0 until rows.length()) {
+                val row = rows.getJSONObject(i); val values = ContentValues()
+                row.keys().forEach { column ->
+                    val cell=row.getJSONObject(column); val type=cell.getInt("type")
+                    when(type){
+                        Cursor.FIELD_TYPE_NULL -> values.putNull(column)
+                        Cursor.FIELD_TYPE_INTEGER -> values.put(column,cell.getLong("value"))
+                        Cursor.FIELD_TYPE_FLOAT -> values.put(column,cell.getDouble("value"))
+                        Cursor.FIELD_TYPE_STRING -> values.put(column,cell.getString("value"))
+                        Cursor.FIELD_TYPE_BLOB -> values.put(column,java.util.Base64.getDecoder().decode(cell.getString("value")))
+                    }
+                }
+                val result=sqlite.insert(table,android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE,values)
+                check(result != -1L) { "Restore failed while inserting $table row $i" }
+                count++
             }
         }
+        count
     }
 }
