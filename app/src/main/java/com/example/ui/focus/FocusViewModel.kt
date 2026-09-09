@@ -1,6 +1,8 @@
 package com.example.ui.focus
 
 import android.app.Application
+import android.content.Intent
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.TrackaaApplication
@@ -10,20 +12,17 @@ import com.example.data.entity.WorkItemEntity
 import com.example.data.model.ActiveSessionState
 import com.example.data.model.OutcomeStatus
 import com.example.data.model.SessionMode
+import com.example.services.FocusTimerService
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
 data class FocusUiExtra(
     val availableWorkItems: List<WorkItemEntity> = emptyList(),
     val availableTasks: List<TaskEntity> = emptyList(),
-    val interruptionReasons: List<InterruptionReasonEntity> = emptyList(),
-    val showReviewDialog: Boolean = false,
-    val showSwitchTaskDialog: Boolean = false,
-    val showInterruptionDialog: Boolean = false
+    val interruptionReasons: List<InterruptionReasonEntity> = emptyList()
 )
 
 class FocusViewModel(application: Application) : AndroidViewModel(application) {
-
     private val app = getApplication<TrackaaApplication>()
     private val focusEngine = app.focusEngine
     private val repository = app.repository
@@ -31,31 +30,22 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
     private val userPrefs = app.userPreferencesRepository
 
     val sessionState: StateFlow<ActiveSessionState> = focusEngine.sessionState
-
     private val _extraState = MutableStateFlow(FocusUiExtra())
     val extraState: StateFlow<FocusUiExtra> = _extraState.asStateFlow()
 
     init {
         viewModelScope.launch {
-            combine(
-                repository.getAllActiveWorkItems(),
-                repository.getAllTasks(),
-                repository.getAllInterruptionReasons()
-            ) { items, tasks, reasons ->
-                _extraState.update {
-                    it.copy(
-                        availableWorkItems = items,
-                        availableTasks = tasks,
-                        interruptionReasons = reasons
-                    )
-                }
-            }.collect()
+            combine(repository.getAllActiveWorkItems(), repository.getAllTasks(), repository.getAllInterruptionReasons()) { items, tasks, reasons ->
+                FocusUiExtra(items, tasks, reasons)
+            }.collect { _extraState.value = it }
         }
     }
 
     fun startSession(
         mode: SessionMode,
         plannedDurationMinutes: Long,
+        pomodoroFocusMinutes: Long,
+        pomodoroBreakMinutes: Long,
         taskId: Long?,
         taskTitle: String,
         workItemId: Long?,
@@ -63,43 +53,32 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
         intent: String?
     ) {
         viewModelScope.launch {
-            val dndEnabled = userPrefs.isDndEnabledFlow.first()
-            dndManager.enableFocusProtection(dndEnabled)
-
-            focusEngine.startFocus(
-                mode = mode,
-                plannedDurationMinutes = plannedDurationMinutes,
-                taskId = taskId,
-                taskTitle = taskTitle,
-                workItemId = workItemId,
-                workItemName = workItemName,
-                intent = intent
-            )
+            dndManager.enableFocusProtection(userPrefs.isDndEnabledFlow.first())
+            focusEngine.startFocus(mode, plannedDurationMinutes, pomodoroFocusMinutes, pomodoroBreakMinutes,
+                taskId, taskTitle, workItemId, workItemName, intent)
+            ContextCompat.startForegroundService(app, Intent(app, FocusTimerService::class.java))
         }
     }
 
     fun pauseSession() {
         viewModelScope.launch {
-            val pauseBehavior = userPrefs.dndPauseBehaviorFlow.first()
-            dndManager.handlePause(pauseBehavior)
+            dndManager.handlePause(userPrefs.dndPauseBehaviorFlow.first())
             focusEngine.pauseFocus()
         }
     }
 
     fun resumeSession() {
         viewModelScope.launch {
-            val pauseBehavior = userPrefs.dndPauseBehaviorFlow.first()
-            dndManager.handleResume(pauseBehavior)
+            dndManager.handleResume(userPrefs.dndPauseBehaviorFlow.first())
             focusEngine.resumeFocus()
+            ContextCompat.startForegroundService(app, Intent(app, FocusTimerService::class.java))
         }
     }
 
-    fun startBreak() {
-        focusEngine.startBreak()
-    }
-
+    fun startBreak() = focusEngine.startBreak()
     fun endBreakAndResumeFocus() {
         focusEngine.endBreakAndResumeFocus()
+        ContextCompat.startForegroundService(app, Intent(app, FocusTimerService::class.java))
     }
 
     fun requestStop() {
@@ -107,15 +86,10 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
         focusEngine.requestStopSession()
     }
 
-    fun switchTask(newTaskId: Long, newTaskTitle: String, newWorkItemId: Long, newWorkItemName: String) {
+    fun switchTask(newTaskId: Long, newTaskTitle: String, newWorkItemId: Long, newWorkItemName: String) =
         focusEngine.switchTask(newTaskId, newTaskTitle, newWorkItemId, newWorkItemName)
-        _extraState.update { it.copy(showSwitchTaskDialog = false) }
-    }
 
-    fun addInterruption(reason: String, note: String?) {
-        focusEngine.addInterruption(reason, note)
-        _extraState.update { it.copy(showInterruptionDialog = false) }
-    }
+    fun addInterruption(reason: String, note: String?) = focusEngine.addInterruption(reason, note)
 
     fun completeReview(
         focusQuality: Int,
@@ -124,27 +98,10 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
         outcomeNotes: String?,
         notes: String?,
         onSaved: () -> Unit
-    ) {
-        focusEngine.completeSessionReview(
-            focusQuality = focusQuality,
-            energyLevel = energyLevel,
-            outcomeStatus = outcomeStatus,
-            outcomeNotes = outcomeNotes,
-            notes = notes,
-            onSaved = onSaved
-        )
-    }
+    ) = focusEngine.completeSessionReview(focusQuality, energyLevel, outcomeStatus, outcomeNotes, notes, onSaved)
 
     fun discardSession() {
         dndManager.disableFocusProtection()
         focusEngine.discardSession()
-    }
-
-    fun setSwitchTaskDialogVisible(visible: Boolean) {
-        _extraState.update { it.copy(showSwitchTaskDialog = visible) }
-    }
-
-    fun setInterruptionDialogVisible(visible: Boolean) {
-        _extraState.update { it.copy(showInterruptionDialog = visible) }
     }
 }
