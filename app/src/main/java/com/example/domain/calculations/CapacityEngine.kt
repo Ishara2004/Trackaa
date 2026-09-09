@@ -1,13 +1,9 @@
 package com.example.domain.calculations
 
 import java.time.LocalDate
+import kotlin.math.ceil
 
-data class DayCapacity(
-    val date: LocalDate,
-    val dayOfWeek: Int, // 1=Mon, 7=Sun
-    val isAvailable: Boolean,
-    val capacityMinutes: Long
-)
+data class DayCapacity(val date: LocalDate, val dayOfWeek: Int, val isAvailable: Boolean, val capacityMinutes: Long)
 
 data class CapacityPlanResult(
     val remainingWorkMinutes: Long,
@@ -17,77 +13,58 @@ data class CapacityPlanResult(
     val capacityDeficitMinutes: Long,
     val requiredMinutesPerEligibleDay: Long,
     val requiredMinutesPerWeek: Long,
-    val plannedAllocations: Map<LocalDate, Long> // Date -> assigned minutes
+    val plannedAllocations: Map<LocalDate, Long>
 )
 
 object CapacityEngine {
+    fun calculateCapacityPlan(remainingWorkMinutes: Long, eligibleDays: List<DayCapacity>): CapacityPlanResult {
+        val remaining = remainingWorkMinutes.coerceAtLeast(0L)
+        val days = eligibleDays.filter { it.isAvailable && it.capacityMinutes > 0 }.sortedBy { it.date }
+        val totalCapacity = days.sumOf { it.capacityMinutes }
+        if (remaining == 0L) return CapacityPlanResult(0, days.size, totalCapacity, true, 0, 0, 0, emptyMap())
+        if (days.isEmpty() || totalCapacity == 0L) return CapacityPlanResult(remaining, 0, 0, false, remaining, 0, 0, emptyMap())
 
-    /**
-     * Calculates capacity-aware allocation of remaining workload across remaining eligible days
-     */
-    fun calculateCapacityPlan(
-        remainingWorkMinutes: Long,
-        eligibleDays: List<DayCapacity>
-    ): CapacityPlanResult {
-        if (remainingWorkMinutes <= 0) {
-            return CapacityPlanResult(
-                remainingWorkMinutes = 0,
-                remainingEligibleDaysCount = eligibleDays.count { it.isAvailable && it.capacityMinutes > 0 },
-                totalAvailableCapacityMinutes = eligibleDays.filter { it.isAvailable }.sumOf { it.capacityMinutes },
-                isFeasible = true,
-                capacityDeficitMinutes = 0,
-                requiredMinutesPerEligibleDay = 0,
-                requiredMinutesPerWeek = 0,
-                plannedAllocations = emptyMap()
-            )
+        val feasible = totalCapacity >= remaining
+        val distributable = minOf(remaining, totalCapacity)
+        val allocations = linkedMapOf<LocalDate, Long>()
+        var allocated = 0L
+
+        days.forEachIndexed { index, day ->
+            val remainingToAllocate = distributable - allocated
+            if (remainingToAllocate <= 0) {
+                allocations[day.date] = 0L
+                return@forEachIndexed
+            }
+            val proposed = if (index == days.lastIndex) remainingToAllocate else {
+                ((distributable.toDouble() * day.capacityMinutes.toDouble()) / totalCapacity.toDouble()).toLong()
+            }
+            val safe = minOf(day.capacityMinutes, proposed.coerceAtLeast(0L), remainingToAllocate)
+            allocations[day.date] = safe
+            allocated += safe
         }
 
-        val availableDays = eligibleDays.filter { it.isAvailable && it.capacityMinutes > 0 }
-        val eligibleDaysCount = availableDays.size
-        val totalCapacity = availableDays.sumOf { it.capacityMinutes }
-
-        if (eligibleDaysCount == 0 || totalCapacity == 0L) {
-            return CapacityPlanResult(
-                remainingWorkMinutes = remainingWorkMinutes,
-                remainingEligibleDaysCount = 0,
-                totalAvailableCapacityMinutes = 0,
-                isFeasible = false,
-                capacityDeficitMinutes = remainingWorkMinutes,
-                requiredMinutesPerEligibleDay = 0,
-                requiredMinutesPerWeek = 0,
-                plannedAllocations = emptyMap()
-            )
-        }
-
-        val isFeasible = totalCapacity >= remainingWorkMinutes
-        val deficit = if (isFeasible) 0L else remainingWorkMinutes - totalCapacity
-        val requiredPerDay = Math.round(remainingWorkMinutes.toDouble() / eligibleDaysCount.toDouble())
-        val requiredPerWeek = requiredPerDay * Math.min(7, eligibleDaysCount)
-
-        // Distribute proportionally to capacity
-        val allocations = mutableMapOf<LocalDate, Long>()
-        var distributedMinutes = 0L
-
-        for (i in availableDays.indices) {
-            val day = availableDays[i]
-            if (i == availableDays.size - 1) {
-                // Assign remainder safely on last day
-                val remainder = Math.max(0L, remainingWorkMinutes - distributedMinutes)
-                allocations[day.date] = remainder
-            } else {
-                val ratio = day.capacityMinutes.toDouble() / totalCapacity.toDouble()
-                val dayAlloc = Math.round(remainingWorkMinutes * ratio)
-                allocations[day.date] = dayAlloc
-                distributedMinutes += dayAlloc
+        // Deterministically distribute any rounding remainder into remaining headroom.
+        var remainder = distributable - allocated
+        if (remainder > 0) {
+            for (day in days) {
+                if (remainder == 0L) break
+                val current = allocations[day.date] ?: 0L
+                val headroom = (day.capacityMinutes - current).coerceAtLeast(0L)
+                val add = minOf(headroom, remainder)
+                allocations[day.date] = current + add
+                remainder -= add
             }
         }
 
+        val requiredPerDay = ceil(remaining.toDouble() / days.size.toDouble()).toLong()
+        val firstSeven = days.take(7)
+        val requiredPerWeek = firstSeven.sumOf { allocations[it.date] ?: 0L }
         return CapacityPlanResult(
-            remainingWorkMinutes = remainingWorkMinutes,
-            remainingEligibleDaysCount = eligibleDaysCount,
+            remainingWorkMinutes = remaining,
+            remainingEligibleDaysCount = days.size,
             totalAvailableCapacityMinutes = totalCapacity,
-            isFeasible = isFeasible,
-            capacityDeficitMinutes = deficit,
+            isFeasible = feasible,
+            capacityDeficitMinutes = (remaining - totalCapacity).coerceAtLeast(0L),
             requiredMinutesPerEligibleDay = requiredPerDay,
             requiredMinutesPerWeek = requiredPerWeek,
             plannedAllocations = allocations
