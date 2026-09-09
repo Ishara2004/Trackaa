@@ -5,6 +5,7 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.dao.TrackaaDao
 import com.example.data.entity.*
@@ -15,136 +16,88 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 @Database(
-    entities = [
-        GoalEntity::class,
-        WorkItemTypeEntity::class,
-        WorkItemEntity::class,
-        TopicEntity::class,
-        TaskEntity::class,
-        TaskDependencyEntity::class,
-        FocusSessionEntity::class,
-        FocusSegmentEntity::class,
-        PauseSegmentEntity::class,
-        BreakSegmentEntity::class,
-        InterruptionEntity::class,
-        InterruptionReasonEntity::class,
-        TargetEntity::class,
-        TargetRevisionEntity::class,
-        AvailabilityEntity::class,
-        AuditEventEntity::class,
-        XpEventEntity::class,
-        AchievementEntity::class,
-        ScheduledFocusEntity::class,
-        ReportingPeriodEntity::class
-    ],
-    version = 1,
-    exportSchema = false
+    entities = [GoalEntity::class, WorkItemTypeEntity::class, WorkItemEntity::class, TopicEntity::class,
+        TaskEntity::class, TaskDependencyEntity::class, FocusSessionEntity::class, FocusSegmentEntity::class,
+        PauseSegmentEntity::class, BreakSegmentEntity::class, InterruptionEntity::class,
+        InterruptionReasonEntity::class, TargetEntity::class, TargetRevisionEntity::class,
+        AvailabilityEntity::class, AuditEventEntity::class, XpEventEntity::class,
+        AchievementEntity::class, ScheduledFocusEntity::class, ReportingPeriodEntity::class],
+    version = 2,
+    exportSchema = true
 )
 @TypeConverters(Converters::class)
 abstract class TrackaaDatabase : RoomDatabase() {
     abstract fun trackaaDao(): TrackaaDao
 
     companion object {
-        @Volatile
-        private var INSTANCE: TrackaaDatabase? = null
+        @Volatile private var INSTANCE: TrackaaDatabase? = null
 
-        fun getInstance(context: Context): TrackaaDatabase {
-            return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
-                    context.applicationContext,
-                    TrackaaDatabase::class.java,
-                    "trackaa_database.db"
-                )
-                    .addCallback(DatabaseCallback())
-                    .build()
-                INSTANCE = instance
-                instance
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE focus_sessions ADD COLUMN totalFocusSeconds INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE focus_sessions ADD COLUMN totalPauseSeconds INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE focus_sessions ADD COLUMN totalBreakSeconds INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE focus_segments ADD COLUMN durationSeconds INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE pause_segments ADD COLUMN durationSeconds INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE break_segments ADD COLUMN durationSeconds INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE focus_sessions SET totalFocusSeconds = totalFocusMinutes * 60, totalPauseSeconds = totalPauseMinutes * 60, totalBreakSeconds = totalBreakMinutes * 60")
+                db.execSQL("UPDATE focus_segments SET durationSeconds = MAX(0, (endEpochMs - startEpochMs) / 1000)")
+                db.execSQL("UPDATE pause_segments SET durationSeconds = MAX(0, (endEpochMs - startEpochMs) / 1000)")
+                db.execSQL("UPDATE break_segments SET durationSeconds = MAX(0, (endEpochMs - startEpochMs) / 1000)")
             }
+        }
+
+        fun getInstance(context: Context): TrackaaDatabase = INSTANCE ?: synchronized(this) {
+            Room.databaseBuilder(context.applicationContext, TrackaaDatabase::class.java, "trackaa_database.db")
+                .addMigrations(MIGRATION_1_2)
+                .addCallback(DatabaseCallback())
+                .build()
+                .also { INSTANCE = it }
         }
 
         private class DatabaseCallback : RoomDatabase.Callback() {
             override fun onCreate(db: SupportSQLiteDatabase) {
                 super.onCreate(db)
-                // Seed default data in background
-                CoroutineScope(Dispatchers.IO).launch {
-                    INSTANCE?.let { database ->
-                        seedDefaultData(database.trackaaDao())
-                    }
-                }
+                CoroutineScope(Dispatchers.IO).launch { INSTANCE?.let { seedDefaultData(it.trackaaDao()) } }
             }
         }
 
         suspend fun seedDefaultData(dao: TrackaaDao) {
-            // Default WorkItem Types
-            val defaultTypes = listOf(
-                WorkItemTypeEntity(name = "Module", isCustom = false, iconName = "school"),
-                WorkItemTypeEntity(name = "Project", isCustom = false, iconName = "code"),
-                WorkItemTypeEntity(name = "Work", isCustom = false, iconName = "business_center"),
-                WorkItemTypeEntity(name = "Personal", isCustom = false, iconName = "person"),
-                WorkItemTypeEntity(name = "Other", isCustom = false, iconName = "more_horiz")
-            )
-            defaultTypes.forEach { dao.insertWorkItemType(it) }
+            listOf(
+                WorkItemTypeEntity(name = "Module", iconName = "school"),
+                WorkItemTypeEntity(name = "Project", iconName = "code"),
+                WorkItemTypeEntity(name = "Work", iconName = "business_center"),
+                WorkItemTypeEntity(name = "Personal", iconName = "person"),
+                WorkItemTypeEntity(name = "Other", iconName = "more_horiz")
+            ).forEach { dao.insertWorkItemType(it) }
 
-            // Default Interruption Reasons
-            val defaultReasons = listOf(
-                InterruptionReasonEntity(name = "Phone", isDefault = true),
-                InterruptionReasonEntity(name = "Social Media", isDefault = true),
-                InterruptionReasonEntity(name = "Call", isDefault = true),
-                InterruptionReasonEntity(name = "People", isDefault = true),
-                InterruptionReasonEntity(name = "Tired", isDefault = true),
-                InterruptionReasonEntity(name = "Food", isDefault = true),
-                InterruptionReasonEntity(name = "Other", isDefault = true)
-            )
-            defaultReasons.forEach { dao.insertInterruptionReason(it) }
+            listOf("Phone", "Social Media", "Call", "People", "Tired", "Food", "Other")
+                .forEach { dao.insertInterruptionReason(InterruptionReasonEntity(name = it, isDefault = true)) }
 
-            // Default Weekly Availability (1=Mon..7=Sun)
-            val defaultAvailability = listOf(
-                AvailabilityEntity(dayOfWeek = 1, isAvailable = true, capacityMinutes = 300), // 5h
-                AvailabilityEntity(dayOfWeek = 2, isAvailable = true, capacityMinutes = 300),
-                AvailabilityEntity(dayOfWeek = 3, isAvailable = true, capacityMinutes = 300),
-                AvailabilityEntity(dayOfWeek = 4, isAvailable = true, capacityMinutes = 300),
-                AvailabilityEntity(dayOfWeek = 5, isAvailable = true, capacityMinutes = 300),
-                AvailabilityEntity(dayOfWeek = 6, isAvailable = true, capacityMinutes = 180), // 3h
-                AvailabilityEntity(dayOfWeek = 7, isAvailable = false, capacityMinutes = 0)   // Rest
-            )
-            dao.insertAvailability(defaultAvailability)
+            dao.insertAvailability(listOf(
+                AvailabilityEntity(1, true, 300), AvailabilityEntity(2, true, 300),
+                AvailabilityEntity(3, true, 300), AvailabilityEntity(4, true, 300),
+                AvailabilityEntity(5, true, 300), AvailabilityEntity(6, true, 180),
+                AvailabilityEntity(7, false, 0)
+            ))
 
-            // Default Achievements
-            val defaultAchievements = listOf(
-                AchievementEntity(code = "FIRST_FOCUS", title = "First Focus", description = "Completed your first deep work session", iconName = "timer"),
-                AchievementEntity(code = "FIRST_10_HOURS", title = "First 10 Hours", description = "Accumulated 10 hours of verified focus", iconName = "hourglass_top"),
-                AchievementEntity(code = "CENTURY_CLUB", title = "Century Club", description = "Accumulated 100 hours of deep work", iconName = "workspace_premium"),
-                AchievementEntity(code = "STREAK_7", title = "7-Day Streak", description = "Maintained a 7-day focus streak", iconName = "local_fire_department"),
-                AchievementEntity(code = "STREAK_30", title = "Iron Focus", description = "Maintained a 30-day focus streak", iconName = "military_tech"),
-                AchievementEntity(code = "FORTY_HOUR_WEEK", title = "40-Hour Week", description = "Focused 40 hours in a single week", iconName = "trending_up"),
-                AchievementEntity(code = "TARGET_CRUSHER", title = "Target Crusher", description = "Reached your daily stretch target", iconName = "rocket_launch"),
-                AchievementEntity(code = "EARLY_BIRD", title = "Early Bird", description = "Completed a session starting before 6:00 AM", iconName = "wb_twilight", isSecret = true),
-                AchievementEntity(code = "NIGHT_OWL", title = "Night Owl", description = "Completed a session starting after 11:00 PM", iconName = "nights_stay", isSecret = true),
-                AchievementEntity(code = "OVERTIME_WARRIOR", title = "Overtime Warrior", description = "Achieved 20+ minutes of countdown overtime", iconName = "speed", isSecret = true)
-            )
-            dao.insertAchievements(defaultAchievements)
+            dao.insertAchievements(listOf(
+                AchievementEntity(code="FIRST_FOCUS", title="First Focus", description="Completed your first deep work session", iconName="timer"),
+                AchievementEntity(code="FIRST_10_HOURS", title="First 10 Hours", description="Accumulated 10 hours of verified focus", iconName="hourglass_top"),
+                AchievementEntity(code="CENTURY_CLUB", title="Century Club", description="Accumulated 100 hours of deep work", iconName="workspace_premium"),
+                AchievementEntity(code="STREAK_7", title="7-Day Streak", description="Maintained a 7-day focus streak", iconName="local_fire_department"),
+                AchievementEntity(code="STREAK_30", title="Iron Focus", description="Maintained a 30-day focus streak", iconName="military_tech"),
+                AchievementEntity(code="FORTY_HOUR_WEEK", title="40-Hour Week", description="Focused 40 hours in a single week", iconName="trending_up"),
+                AchievementEntity(code="TARGET_CRUSHER", title="Target Crusher", description="Reached your daily stretch target", iconName="rocket_launch"),
+                AchievementEntity(code="EARLY_BIRD", title="Early Bird", description="Completed a session starting before 6:00 AM", iconName="wb_twilight", isSecret=true),
+                AchievementEntity(code="NIGHT_OWL", title="Night Owl", description="Completed a session starting after 11:00 PM", iconName="nights_stay", isSecret=true),
+                AchievementEntity(code="OVERTIME_WARRIOR", title="Overtime Warrior", description="Achieved 20+ minutes of countdown overtime", iconName="speed", isSecret=true)
+            ))
 
-            // Default Global Daily Target (Min: 3h=180m, Goal: 5h=300m, Stretch: 7h=420m)
-            val defaultDailyTarget = TargetEntity(
-                scopeType = TargetScope.GLOBAL,
-                periodType = TargetPeriod.DAILY,
-                minMinutes = 180,
-                goalMinutes = 300,
-                stretchMinutes = 420,
-                startDateEpochMs = System.currentTimeMillis()
-            )
-            dao.insertTarget(defaultDailyTarget)
-
-            // Default Global Weekly Target (Min: 15h=900m, Goal: 25h=1500m, Stretch: 35h=2100m)
-            val defaultWeeklyTarget = TargetEntity(
-                scopeType = TargetScope.GLOBAL,
-                periodType = TargetPeriod.WEEKLY,
-                minMinutes = 900,
-                goalMinutes = 1500,
-                stretchMinutes = 2100,
-                startDateEpochMs = System.currentTimeMillis()
-            )
-            dao.insertTarget(defaultWeeklyTarget)
+            dao.insertTarget(TargetEntity(scopeType=TargetScope.GLOBAL, periodType=TargetPeriod.DAILY,
+                minMinutes=180, goalMinutes=300, stretchMinutes=420, startDateEpochMs=System.currentTimeMillis()))
+            dao.insertTarget(TargetEntity(scopeType=TargetScope.GLOBAL, periodType=TargetPeriod.WEEKLY,
+                minMinutes=900, goalMinutes=1500, stretchMinutes=2100, startDateEpochMs=System.currentTimeMillis()))
         }
     }
 }
