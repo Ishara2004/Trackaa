@@ -7,7 +7,7 @@ plugins {
 
 android {
   namespace = "com.example"
-  compileSdk = 37
+  compileSdk = 36
 
   defaultConfig {
     applicationId = "com.ishara2004.trackaa"
