@@ -7,6 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.data.dao.BackupDao
 import com.example.data.dao.TrackaaDao
 import com.example.data.entity.*
 import com.example.data.model.TargetPeriod
@@ -28,6 +29,7 @@ import kotlinx.coroutines.launch
 @TypeConverters(Converters::class)
 abstract class TrackaaDatabase : RoomDatabase() {
     abstract fun trackaaDao(): TrackaaDao
+    abstract fun backupDao(): BackupDao
 
     companion object {
         @Volatile private var INSTANCE: TrackaaDatabase? = null
