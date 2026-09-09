@@ -1,0 +1,6 @@
+{
+  "name": "Trackaa",
+  "description": "Offline-first Deep Work Tracking and Performance Operating System",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
