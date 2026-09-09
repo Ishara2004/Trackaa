@@ -4,210 +4,97 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.TrackaaApplication
-import com.example.data.entity.FocusSessionEntity
-import com.example.data.entity.InterruptionEntity
-import com.example.data.entity.WorkItemEntity
+import com.example.data.entity.*
+import com.example.data.model.TargetPeriod
 import com.example.domain.calculations.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.time.DayOfWeek
-import java.time.Instant
-import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.ZoneId
+import java.time.*
 import java.time.temporal.ChronoUnit
 
-enum class AnalyticsTimeframe {
-    DAILY,
-    WEEKLY,
-    MONTHLY
-}
-
-data class HourlyDistribution(
-    val morningMinutes: Long,   // 05:00 - 12:00
-    val afternoonMinutes: Long, // 12:00 - 17:00
-    val eveningMinutes: Long,   // 17:00 - 22:00
-    val nightMinutes: Long      // 22:00 - 05:00
-)
-
+enum class AnalyticsTimeframe { DAILY, WEEKLY, MONTHLY }
+data class HourlyDistribution(val morningMinutes:Long,val afternoonMinutes:Long,val eveningMinutes:Long,val nightMinutes:Long)
 data class AnalyticsUiState(
-    val selectedTimeframe: AnalyticsTimeframe = AnalyticsTimeframe.WEEKLY,
-    val selectedDate: LocalDate = LocalDate.now(),
-    val totalFocusMinutes: Long = 0,
-    val dailyAverageMinutes: Long = 0,
-    val longestSessionMinutes: Long = 0,
-    val totalPauseMinutes: Long = 0,
-    val pauseRatioPercent: Double = 0.0,
-    val interruptionCount: Int = 0,
-    val averageQuality: Double = 0.0,
-    val averageEnergy: Double = 0.0,
-    val hourlyDistribution: HourlyDistribution = HourlyDistribution(0, 0, 0, 0),
-    val workItemDistribution: Map<String, Long> = emptyMap(), // Name -> minutes
-    val sessionsInPeriod: List<FocusSessionEntity> = emptyList(),
-    val focusDebtResult: FocusDebtResult? = null,
-    val recoveryPlanResult: RecoveryPlanResult? = null,
-    val forecastResult: ForecastResult? = null,
-    val whatIfPaceResult: WhatIfPaceToDateResult? = null,
-    val whatIfDeadlineResult: WhatIfDeadlineResult? = null,
-    val isLoading: Boolean = true
+    val selectedTimeframe: AnalyticsTimeframe=AnalyticsTimeframe.WEEKLY,
+    val selectedDate: LocalDate=LocalDate.now(),
+    val totalFocusMinutes:Long=0,val dailyAverageMinutes:Long=0,val longestSessionMinutes:Long=0,
+    val totalPauseMinutes:Long=0,val pauseRatioPercent:Double=0.0,val interruptionCount:Int=0,
+    val averageQuality:Double=0.0,val averageEnergy:Double=0.0,
+    val hourlyDistribution:HourlyDistribution=HourlyDistribution(0,0,0,0),
+    val workItemDistribution:Map<String,Long> = emptyMap(),
+    val sessionsInPeriod:List<FocusSessionEntity> = emptyList(),
+    val focusDebtResult:FocusDebtResult?=null,val recoveryPlanResult:RecoveryPlanResult?=null,val forecastResult:ForecastResult?=null,
+    val whatIfPaceResult:WhatIfPaceToDateResult?=null,val whatIfDeadlineResult:WhatIfDeadlineResult?=null,
+    val isLoading:Boolean=true
 )
 
-class AnalyticsViewModel(application: Application) : AndroidViewModel(application) {
+class AnalyticsViewModel(application: Application): AndroidViewModel(application) {
+    private val app=getApplication<TrackaaApplication>(); private val repository=app.repository
+    private val _uiState=MutableStateFlow(AnalyticsUiState()); val uiState:StateFlow<AnalyticsUiState> = _uiState.asStateFlow()
+    init { loadAnalytics() }
+    fun setTimeframe(t:AnalyticsTimeframe){ _uiState.update{it.copy(selectedTimeframe=t)}; loadAnalytics() }
+    fun selectDate(d:LocalDate){ _uiState.update{it.copy(selectedDate=d)}; loadAnalytics() }
 
-    private val app = getApplication<TrackaaApplication>()
-    private val repository = app.repository
-
-    private val _uiState = MutableStateFlow(AnalyticsUiState())
-    val uiState: StateFlow<AnalyticsUiState> = _uiState.asStateFlow()
-
-    init {
-        loadAnalytics()
-    }
-
-    fun setTimeframe(timeframe: AnalyticsTimeframe) {
-        _uiState.update { it.copy(selectedTimeframe = timeframe) }
-        loadAnalytics()
-    }
-
-    fun selectDate(date: LocalDate) {
-        _uiState.update { it.copy(selectedDate = date) }
-        loadAnalytics()
-    }
-
-    private fun loadAnalytics() {
+    @Suppress("UNCHECKED_CAST")
+    private fun loadAnalytics(){
         viewModelScope.launch {
-            repository.getAllFocusSessions().collect { allSessions ->
-                val state = _uiState.value
-                val zoneId = ZoneId.systemDefault()
-                val selectedDate = state.selectedDate
-
-                // Determine timeframe range
-                val (startDate, endDate) = when (state.selectedTimeframe) {
-                    AnalyticsTimeframe.DAILY -> Pair(selectedDate, selectedDate)
-                    AnalyticsTimeframe.WEEKLY -> {
-                        val monday = selectedDate.with(DayOfWeek.MONDAY)
-                        val sunday = selectedDate.with(DayOfWeek.SUNDAY)
-                        Pair(monday, sunday)
+            combine(repository.getAllFocusSessions(),repository.getAllInterruptions(),repository.getAllTargets(),repository.getAllAvailability(),repository.getAllActiveWorkItems()) { a:Array<Any?> -> a }
+                .collect { a ->
+                    val allSessions=a[0] as List<FocusSessionEntity>; val interruptions=a[1] as List<InterruptionEntity>; val targets=a[2] as List<TargetEntity>
+                    val availability=a[3] as List<AvailabilityEntity>; val workItems=a[4] as List<WorkItemEntity>
+                    val zone=ZoneId.systemDefault(); val selected=_uiState.value.selectedDate
+                    val (start,end)=when(_uiState.value.selectedTimeframe){
+                        AnalyticsTimeframe.DAILY -> selected to selected
+                        AnalyticsTimeframe.WEEKLY -> selected.with(DayOfWeek.MONDAY) to selected.with(DayOfWeek.SUNDAY)
+                        AnalyticsTimeframe.MONTHLY -> selected.withDayOfMonth(1) to selected.withDayOfMonth(selected.lengthOfMonth())
                     }
-                    AnalyticsTimeframe.MONTHLY -> {
-                        val first = selectedDate.withDayOfMonth(1)
-                        val last = selectedDate.withDayOfMonth(selectedDate.lengthOfMonth())
-                        Pair(first, last)
-                    }
-                }
-
-                // Filter and split sessions by calendar day
-                val dailyMinutesMap = mutableMapOf<LocalDate, Long>()
-                val periodSessions = mutableListOf<FocusSessionEntity>()
-
-                var morningMin = 0L
-                var afternoonMin = 0L
-                var eveningMin = 0L
-                var nightMin = 0L
-
-                for (session in allSessions) {
-                    val split = DurationCalculator.splitIntervalByCalendarDays(session.startEpochMs, session.endEpochMs, zoneId)
-                    var inPeriod = false
-
-                    for ((date, mins) in split) {
-                        if (!date.isBefore(startDate) && !date.isAfter(endDate)) {
-                            dailyMinutesMap[date] = (dailyMinutesMap[date] ?: 0L) + mins
-                            inPeriod = true
+                    val startMs=start.atStartOfDay(zone).toInstant().toEpochMilli(); val endMs=end.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
+                    val periodSessions=allSessions.filter { it.endEpochMs>startMs && it.startEpochMs<endMs }
+                    val dailySec=mutableMapOf<LocalDate,Long>(); val itemSec=mutableMapOf<Long,Long>()
+                    var morning=0L;var afternoon=0L;var evening=0L;var night=0L; var longestSec=0L
+                    for(session in periodSessions){
+                        var sessionSec=0L
+                        for(seg in repository.getFocusSegmentsForSessionOnce(session.id)){
+                            val s=maxOf(seg.startEpochMs,startMs); val e=minOf(seg.endEpochMs,endMs); if(s>=e) continue
+                            val sec=(e-s)/1000L; sessionSec+=sec; itemSec[seg.workItemId]=(itemSec[seg.workItemId]?:0L)+sec
+                            DurationCalculator.splitIntervalByCalendarDaysSeconds(s,e,zone).forEach{(d,v)->dailySec[d]=(dailySec[d]?:0L)+v}
+                            val bucket=Instant.ofEpochMilli(s).atZone(zone).hour
+                            when(bucket){ in 5..11->morning+=sec; in 12..16->afternoon+=sec; in 17..21->evening+=sec; else->night+=sec }
                         }
+                        longestSec=maxOf(longestSec,sessionSec)
                     }
+                    val totalSec=dailySec.values.sum(); val totalMin=totalSec/60L
+                    val days=ChronoUnit.DAYS.between(start,end)+1; val dailyAvg=if(days>0) totalMin/days else 0
+                    val pauseSec=periodSessions.sumOf { if(it.totalPauseSeconds>0) it.totalPauseSeconds else it.totalPauseMinutes*60L }
+                    val pauseRatio=if(totalSec+pauseSec>0) pauseSec.toDouble()/(totalSec+pauseSec)*100 else 0.0
+                    val ids=periodSessions.map{it.id}.toSet(); val periodInts=interruptions.count{it.sessionId in ids}
+                    val avgQ=if(periodSessions.isEmpty())0.0 else periodSessions.map{it.focusQuality}.average(); val avgE=if(periodSessions.isEmpty())0.0 else periodSessions.map{it.energyLevel}.average()
+                    val names=workItems.associate{it.id to it.name}; val distribution=itemSec.filterKeys{it>0}.mapKeys{names[it.key]?:"Unknown"}.mapValues{it.value/60L}
 
-                    if (inPeriod) {
-                        periodSessions.add(session)
-                        val startLdt = LocalDateTime.ofInstant(Instant.ofEpochMilli(session.startEpochMs), zoneId)
-                        when (startLdt.hour) {
-                            in 5..11 -> morningMin += session.totalFocusMinutes
-                            in 12..16 -> afternoonMin += session.totalFocusMinutes
-                            in 17..21 -> eveningMin += session.totalFocusMinutes
-                            else -> nightMin += session.totalFocusMinutes
-                        }
+                    val availMap=availability.associateBy{it.dayOfWeek}; val dates=generateSequence(start){ if(it<end) it.plusDays(1) else null }.toList()
+                    val eligible=dates.filter{availMap[it.dayOfWeek.value]?.isAvailable!=false}; val periodTarget=when(_uiState.value.selectedTimeframe){
+                        AnalyticsTimeframe.DAILY->targets.firstOrNull{it.scopeType.name=="GLOBAL"&&it.periodType==TargetPeriod.DAILY}?.goalMinutes ?: 300L
+                        AnalyticsTimeframe.WEEKLY->targets.firstOrNull{it.scopeType.name=="GLOBAL"&&it.periodType==TargetPeriod.WEEKLY}?.goalMinutes ?: ((targets.firstOrNull{it.scopeType.name=="GLOBAL"&&it.periodType==TargetPeriod.DAILY}?.goalMinutes?:300L)*eligible.size)
+                        AnalyticsTimeframe.MONTHLY->targets.firstOrNull{it.scopeType.name=="GLOBAL"&&it.periodType==TargetPeriod.MONTHLY}?.goalMinutes ?: ((targets.firstOrNull{it.scopeType.name=="GLOBAL"&&it.periodType==TargetPeriod.DAILY}?.goalMinutes?:300L)*eligible.size)
                     }
+                    val debt=TargetEngine.calculateDebtOrCredit(periodTarget,totalMin)
+                    val upcoming=(1..14).map{ selected.plusDays(it.toLong()) }.map { d -> val av=availMap[d.dayOfWeek.value]; DayCapacity(d,d.dayOfWeek.value,av?.isAvailable?:true,av?.capacityMinutes?:300L) }
+                    val recovery=if(debt.isDebt&&debt.differenceMinutes>0) RecoveryPlanEngine.generateRecoveryPlan(debt.differenceMinutes,upcoming) else null
+                    val excluded=DayOfWeek.values().filter{availMap[it.value]?.isAvailable==false}.toSet(); val history=dailySec.mapValues{it.value/60L}
+                    val remaining=(periodTarget-totalMin).coerceAtLeast(0); val forecast=ForecastEngine.calculateForecast(history,eligible.size,remaining,end,LocalDate.now(),excluded)
+                    _uiState.update{it.copy(totalFocusMinutes=totalMin,dailyAverageMinutes=dailyAvg,longestSessionMinutes=longestSec/60L,
+                        totalPauseMinutes=pauseSec/60L,pauseRatioPercent=pauseRatio,interruptionCount=periodInts,averageQuality=avgQ,averageEnergy=avgE,
+                        hourlyDistribution=HourlyDistribution(morning/60,afternoon/60,evening/60,night/60),workItemDistribution=distribution,
+                        sessionsInPeriod=periodSessions,focusDebtResult=debt,recoveryPlanResult=recovery,forecastResult=forecast,isLoading=false)}
                 }
-
-                val totalFocus = periodSessions.sumOf { it.totalFocusMinutes }
-                val totalPause = periodSessions.sumOf { it.totalPauseMinutes }
-                val dayCount = Math.max(1, ChronoUnit.DAYS.between(startDate, endDate) + 1)
-                val dailyAvg = totalFocus / dayCount
-                val longest = periodSessions.maxOfOrNull { it.totalFocusMinutes } ?: 0L
-
-                val totalWall = totalFocus + totalPause
-                val pauseRatio = if (totalWall > 0) (totalPause.toDouble() / totalWall.toDouble()) * 100.0 else 0.0
-
-                val avgQual = if (periodSessions.isNotEmpty()) periodSessions.map { it.focusQuality }.average() else 0.0
-                val avgEnergy = if (periodSessions.isNotEmpty()) periodSessions.map { it.energyLevel }.average() else 0.0
-
-                // Interruption count
-                val allInterr = repository.getAllInterruptions().first()
-                val sessionIds = periodSessions.map { it.id }.toSet()
-                val periodInterr = allInterr.filter { sessionIds.contains(it.sessionId) }
-
-                // Expected targets and debt calculation
-                val expectedTargetMinutes = dayCount * 240L // assuming 4h / day target
-                val debtResult = TargetEngine.calculateDebtOrCredit(expectedTargetMinutes, totalFocus)
-
-                // Recovery Plan if debt exists
-                val recoveryPlan = if (debtResult.isDebt && debtResult.differenceMinutes > 0) {
-                    val upcomingDays = (1..7).map { i ->
-                        val d = LocalDate.now().plusDays(i.toLong())
-                        DayCapacity(
-                            date = d,
-                            dayOfWeek = d.dayOfWeek.value,
-                            isAvailable = d.dayOfWeek != DayOfWeek.SUNDAY,
-                            capacityMinutes = 360L // 6h available daily capacity
-                        )
-                    }
-                    RecoveryPlanEngine.generateRecoveryPlan(debtResult.differenceMinutes, upcomingDays)
-                } else null
-
-                // Forecast
-                val forecast = ForecastEngine.calculateForecast(
-                    historicalDailyMinutes = dailyMinutesMap,
-                    eligibleWorkingDaysCount = dayCount.toInt(),
-                    remainingWorkMinutes = Math.max(0L, expectedTargetMinutes - totalFocus),
-                    deadlineDate = endDate,
-                    currentDate = LocalDate.now()
-                )
-
-                _uiState.update {
-                    it.copy(
-                        totalFocusMinutes = totalFocus,
-                        dailyAverageMinutes = dailyAvg,
-                        longestSessionMinutes = longest,
-                        totalPauseMinutes = totalPause,
-                        pauseRatioPercent = pauseRatio,
-                        interruptionCount = periodInterr.size,
-                        averageQuality = avgQual,
-                        averageEnergy = avgEnergy,
-                        hourlyDistribution = HourlyDistribution(morningMin, afternoonMin, eveningMin, nightMin),
-                        sessionsInPeriod = periodSessions,
-                        focusDebtResult = debtResult,
-                        recoveryPlanResult = recoveryPlan,
-                        forecastResult = forecast,
-                        isLoading = false
-                    )
-                }
-            }
         }
     }
 
-    fun runWhatIfPaceSimulation(dailyHours: Double, remainingHours: Double) {
-        val result = WhatIfSimulator.simulateFinishDate(
-            dailyFocusMinutes = (dailyHours * 60).toLong(),
-            remainingWorkMinutes = (remainingHours * 60).toLong()
-        )
-        _uiState.update { it.copy(whatIfPaceResult = result) }
+    fun runWhatIfPaceSimulation(dailyHours:Double,remainingHours:Double){
+        _uiState.update{it.copy(whatIfPaceResult=WhatIfSimulator.simulateFinishDate((dailyHours*60).toLong(),(remainingHours*60).toLong()))}
     }
-
-    fun runWhatIfDeadlineSimulation(targetDaysAhead: Long, remainingHours: Double) {
-        val deadline = LocalDate.now().plusDays(targetDaysAhead)
-        val result = WhatIfSimulator.simulateRequiredPaceForDeadline(
-            deadline = deadline,
-            remainingWorkMinutes = (remainingHours * 60).toLong()
-        )
-        _uiState.update { it.copy(whatIfDeadlineResult = result) }
+    fun runWhatIfDeadlineSimulation(targetDaysAhead:Long,remainingHours:Double){
+        val deadline=LocalDate.now().plusDays(targetDaysAhead)
+        _uiState.update{it.copy(whatIfDeadlineResult=WhatIfSimulator.simulateRequiredPaceForDeadline(deadline,(remainingHours*60).toLong()))}
     }
 }
