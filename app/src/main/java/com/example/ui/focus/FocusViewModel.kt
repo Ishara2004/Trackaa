@@ -41,6 +41,23 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Backward-compatible API used by the current Compose screen. */
+    fun startSession(
+        mode: SessionMode,
+        plannedDurationMinutes: Long,
+        taskId: Long?,
+        taskTitle: String,
+        workItemId: Long?,
+        workItemName: String,
+        intent: String?
+    ) {
+        val pomoBreak = when (plannedDurationMinutes) { 50L -> 10L; 90L -> 15L; else -> 5L }
+        startSession(mode, plannedDurationMinutes,
+            pomodoroFocusMinutes = if (mode == SessionMode.POMODORO) plannedDurationMinutes.coerceAtLeast(25L) else 25L,
+            pomodoroBreakMinutes = pomoBreak,
+            taskId, taskTitle, workItemId, workItemName, intent)
+    }
+
     fun startSession(
         mode: SessionMode,
         plannedDurationMinutes: Long,
@@ -60,48 +77,13 @@ class FocusViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun pauseSession() {
-        viewModelScope.launch {
-            dndManager.handlePause(userPrefs.dndPauseBehaviorFlow.first())
-            focusEngine.pauseFocus()
-        }
-    }
-
-    fun resumeSession() {
-        viewModelScope.launch {
-            dndManager.handleResume(userPrefs.dndPauseBehaviorFlow.first())
-            focusEngine.resumeFocus()
-            ContextCompat.startForegroundService(app, Intent(app, FocusTimerService::class.java))
-        }
-    }
-
+    fun pauseSession() { viewModelScope.launch { dndManager.handlePause(userPrefs.dndPauseBehaviorFlow.first()); focusEngine.pauseFocus() } }
+    fun resumeSession() { viewModelScope.launch { dndManager.handleResume(userPrefs.dndPauseBehaviorFlow.first()); focusEngine.resumeFocus(); ContextCompat.startForegroundService(app, Intent(app, FocusTimerService::class.java)) } }
     fun startBreak() = focusEngine.startBreak()
-    fun endBreakAndResumeFocus() {
-        focusEngine.endBreakAndResumeFocus()
-        ContextCompat.startForegroundService(app, Intent(app, FocusTimerService::class.java))
-    }
-
-    fun requestStop() {
-        dndManager.disableFocusProtection()
-        focusEngine.requestStopSession()
-    }
-
-    fun switchTask(newTaskId: Long, newTaskTitle: String, newWorkItemId: Long, newWorkItemName: String) =
-        focusEngine.switchTask(newTaskId, newTaskTitle, newWorkItemId, newWorkItemName)
-
+    fun endBreakAndResumeFocus() { focusEngine.endBreakAndResumeFocus(); ContextCompat.startForegroundService(app, Intent(app, FocusTimerService::class.java)) }
+    fun requestStop() { dndManager.disableFocusProtection(); focusEngine.requestStopSession() }
+    fun switchTask(newTaskId: Long, newTaskTitle: String, newWorkItemId: Long, newWorkItemName: String) = focusEngine.switchTask(newTaskId, newTaskTitle, newWorkItemId, newWorkItemName)
     fun addInterruption(reason: String, note: String?) = focusEngine.addInterruption(reason, note)
-
-    fun completeReview(
-        focusQuality: Int,
-        energyLevel: Int,
-        outcomeStatus: OutcomeStatus?,
-        outcomeNotes: String?,
-        notes: String?,
-        onSaved: () -> Unit
-    ) = focusEngine.completeSessionReview(focusQuality, energyLevel, outcomeStatus, outcomeNotes, notes, onSaved)
-
-    fun discardSession() {
-        dndManager.disableFocusProtection()
-        focusEngine.discardSession()
-    }
+    fun completeReview(focusQuality: Int, energyLevel: Int, outcomeStatus: OutcomeStatus?, outcomeNotes: String?, notes: String?, onSaved: () -> Unit) = focusEngine.completeSessionReview(focusQuality, energyLevel, outcomeStatus, outcomeNotes, notes, onSaved)
+    fun discardSession() { dndManager.disableFocusProtection(); focusEngine.discardSession() }
 }
